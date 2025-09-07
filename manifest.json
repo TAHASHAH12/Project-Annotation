@@ -1,15 +1,16 @@
 {
     "manifest_version": 3,
-    "name": "Drive Behavior Tagger",
-    "version": "1.0",
-    "description": "Auto-detect words and click checkboxes to tag behaviors",
+    "name": "Drive Behavior Tagger Pro",
+    "version": "2.0",
+    "description": "High-performance auto-detect and tag driving behaviors",
     "permissions": [
       "activeTab",
       "storage"
     ],
     "content_scripts": [{
       "matches": ["<all_urls>"],
-      "js": ["content.js"]
+      "js": ["content.js"],
+      "run_at": "document_idle"
     }],
     "background": {
       "service_worker": "background.js"
