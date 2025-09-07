@@ -23,9 +23,28 @@ class DriveBehaviorTagger {
         'd5': 'Smoking'
       };
   
+      // Keywords to detect and their corresponding checkboxes
+      this.keywordToCheckbox = {
+        'tailgating': ['following', 'tailgate', 'close follow'],
+        'lane cutoff': ['cutoff', 'cut off', 'lane cut'],
+        'unsafe lane change': ['unsafe lane', 'lane change', 'improper lane'],
+        'stop sign': ['stop sign', 'stop violation'],
+        'red light': ['red light', 'running red', 'light violation'],
+        'collision': ['collision', 'crash', 'impact'],
+        'near collision': ['near miss', 'near collision', 'almost crash'],
+        'distraction': ['distracted', 'distraction', 'not paying attention'],
+        'cellphone': ['phone', 'cell phone', 'mobile', 'texting'],
+        'drowsiness': ['drowsy', 'sleepy', 'tired', 'fatigue'],
+        'seatbelt': ['seat belt', 'seatbelt', 'belt violation'],
+        'smoking': ['smoke', 'smoking', 'cigarette']
+      };
+  
       this.selectedTags = new Set();
       this.currentSpeed = 1.0;
       this.waitingForDriverTag = false;
+      this.autoDetectionEnabled = true;
+      this.observedCheckboxes = new Set();
+      
       this.init();
     }
   
@@ -33,7 +52,7 @@ class DriveBehaviorTagger {
       this.createUI();
       this.attachEventListeners();
       this.loadSettings();
-      this.detectWordsOnPage();
+      this.startAutoDetection();
     }
   
     createUI() {
@@ -42,10 +61,16 @@ class DriveBehaviorTagger {
       panel.id = 'behavior-tagger-panel';
       panel.innerHTML = `
         <div class="tagger-header">
-          <h3>Behavior Tagger</h3>
+          <h3>Auto Behavior Tagger</h3>
           <button id="toggle-panel">−</button>
         </div>
         <div class="tagger-content">
+          <div class="auto-detection">
+            <label>
+              <input type="checkbox" id="auto-detection-toggle" ${this.autoDetectionEnabled ? 'checked' : ''}>
+              Auto-detect and click checkboxes
+            </label>
+          </div>
           <div class="tag-section">
             <h4>Road Facing (F1-F12)</h4>
             <div id="road-tags"></div>
@@ -57,15 +82,19 @@ class DriveBehaviorTagger {
           <div class="controls">
             <div>Speed: <span id="speed-display">1.0x</span></div>
             <div class="shortcuts-info">
-              <small>F1-F12: Road tags | D+1-5: Driver tags<br>
+              <small>Auto-detects words and clicks checkboxes<br>
               Ctrl+↑↓: Speed | Ctrl+Space: Submit | Alt+F: Fullscreen</small>
             </div>
             <button id="submit-tags">Submit (Ctrl+Space)</button>
             <button id="clear-tags">Clear All</button>
           </div>
-          <div class="detected-words">
-            <h4>Detected Words</h4>
-            <div id="word-list"></div>
+          <div class="detected-actions">
+            <h4>Auto-Detection Log</h4>
+            <div id="detection-log"></div>
+          </div>
+          <div class="found-checkboxes">
+            <h4>Found Checkboxes</h4>
+            <div id="checkbox-list"></div>
           </div>
         </div>
       `;
@@ -77,14 +106,14 @@ class DriveBehaviorTagger {
           position: fixed;
           top: 20px;
           right: 20px;
-          width: 320px;
+          width: 350px;
           background: #fff;
           border: 2px solid #333;
           border-radius: 8px;
           font-family: Arial, sans-serif;
           z-index: 10000;
           box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-          max-height: 80vh;
+          max-height: 85vh;
           overflow: hidden;
         }
         .tagger-header {
@@ -114,6 +143,18 @@ class DriveBehaviorTagger {
           max-height: 500px;
           overflow-y: auto;
         }
+        .auto-detection {
+          margin-bottom: 15px;
+          padding: 8px;
+          background: #f0f8ff;
+          border-radius: 4px;
+          border: 1px solid #4CAF50;
+        }
+        .auto-detection label {
+          font-size: 12px;
+          font-weight: bold;
+          color: #2196F3;
+        }
         .tag-section {
           margin-bottom: 15px;
         }
@@ -141,6 +182,11 @@ class DriveBehaviorTagger {
           background: #4CAF50;
           color: white;
         }
+        .tag-item.auto-selected {
+          background: #FF9800;
+          color: white;
+          border: 2px solid #F57C00;
+        }
         .tag-item .tag-name {
           flex: 1;
           text-align: left;
@@ -152,7 +198,7 @@ class DriveBehaviorTagger {
           font-size: 10px;
           font-weight: bold;
         }
-        .tag-item.selected .tag-key {
+        .tag-item.selected .tag-key, .tag-item.auto-selected .tag-key {
           background: rgba(255,255,255,0.2);
         }
         .controls {
@@ -183,40 +229,42 @@ class DriveBehaviorTagger {
         #clear-tags {
           background: #f44336;
         }
-        #submit-tags:hover {
-          background: #1976D2;
-        }
-        #clear-tags:hover {
-          background: #d32f2f;
-        }
-        .detected-words {
+        .detected-actions, .found-checkboxes {
           border-top: 1px solid #ddd;
           padding-top: 10px;
           margin-top: 10px;
         }
-        .detected-words h4 {
+        .detected-actions h4, .found-checkboxes h4 {
           margin: 0 0 8px 0;
           font-size: 14px;
           color: #333;
         }
-        .detected-word {
-          display: inline-block;
-          background: #FFF3E0;
-          color: #E65100;
+        .detection-log {
+          max-height: 100px;
+          overflow-y: auto;
+          font-size: 11px;
+          background: #f9f9f9;
+          padding: 5px;
+          border-radius: 3px;
+        }
+        .log-entry {
+          margin: 2px 0;
+          color: #666;
+        }
+        .log-entry.success {
+          color: #4CAF50;
+          font-weight: bold;
+        }
+        .log-entry.error {
+          color: #f44336;
+        }
+        .checkbox-info {
+          font-size: 11px;
+          background: #fff3e0;
           padding: 3px 6px;
           margin: 2px;
           border-radius: 3px;
-          font-size: 11px;
-          cursor: pointer;
-          border: 1px solid #FFB74D;
-        }
-        .detected-word:hover {
-          background: #FFE0B2;
-        }
-        .detected-word.matched {
-          background: #4CAF50;
-          color: white;
-          border-color: #4CAF50;
+          border: 1px solid #ffb74d;
         }
         .notification {
           position: fixed;
@@ -240,13 +288,13 @@ class DriveBehaviorTagger {
       document.body.appendChild(panel);
   
       this.renderTags();
+      this.updateCheckboxDisplay();
     }
   
     renderTags() {
       const roadContainer = document.getElementById('road-tags');
       const driverContainer = document.getElementById('driver-tags');
   
-      // Clear existing content
       roadContainer.innerHTML = '';
       driverContainer.innerHTML = '';
   
@@ -277,74 +325,164 @@ class DriveBehaviorTagger {
       });
     }
   
-    detectWordsOnPage() {
-      const allTags = {...this.roadFacingTags, ...this.driverFacingTags};
-      const tagValues = Object.values(allTags).map(tag => tag.toLowerCase());
-      const pageText = document.body.innerText.toLowerCase();
-      const detectedWords = new Set();
+    startAutoDetection() {
+      // Scan for checkboxes every 2 seconds
+      setInterval(() => {
+        if (this.autoDetectionEnabled) {
+          this.scanAndClickCheckboxes();
+        }
+      }, 2000);
   
-      // Check for tag words on the page
-      tagValues.forEach(tag => {
-        const words = tag.split(/\s+/);
-        words.forEach(word => {
-          if (word.length > 3 && pageText.includes(word)) {
-            detectedWords.add(word);
-          }
+      // Also scan when page content changes
+      const observer = new MutationObserver(() => {
+        if (this.autoDetectionEnabled) {
+          this.scanAndClickCheckboxes();
+        }
+      });
+  
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+    }
+  
+    scanAndClickCheckboxes() {
+      // Find all checkboxes on the page
+      const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+      const pageText = document.body.innerText.toLowerCase();
+      
+      checkboxes.forEach(checkbox => {
+        // Skip if already processed
+        if (this.observedCheckboxes.has(checkbox)) return;
+        
+        this.observedCheckboxes.add(checkbox);
+        
+        // Find associated label text
+        const labelText = this.getCheckboxLabelText(checkbox);
+        
+        // Check if any keywords match
+        Object.entries(this.keywordToCheckbox).forEach(([category, keywords]) => {
+          keywords.forEach(keyword => {
+            if (pageText.includes(keyword.toLowerCase()) || 
+                labelText.toLowerCase().includes(keyword.toLowerCase())) {
+              
+              // Auto-click the checkbox if not already checked
+              if (!checkbox.checked) {
+                this.autoClickCheckbox(checkbox, keyword, category);
+              }
+            }
+          });
         });
       });
   
-      // Also check for common driving-related words
-      const drivingWords = ['collision', 'tailgating', 'distraction', 'cellphone', 'drowsiness', 
-                           'speeding', 'violation', 'unsafe', 'following', 'cutoff'];
-      drivingWords.forEach(word => {
-        if (pageText.includes(word)) {
-          detectedWords.add(word);
-        }
-      });
-  
-      this.displayDetectedWords(Array.from(detectedWords));
+      this.updateCheckboxDisplay();
     }
   
-    displayDetectedWords(words) {
-      const wordList = document.getElementById('word-list');
-      wordList.innerHTML = '';
-  
-      if (words.length === 0) {
-        wordList.innerHTML = '<small>No driving-related terms detected</small>';
-        return;
+    getCheckboxLabelText(checkbox) {
+      let labelText = '';
+      
+      // Method 1: Check for label with 'for' attribute
+      if (checkbox.id) {
+        const label = document.querySelector(`label[for="${checkbox.id}"]`);
+        if (label) labelText += label.textContent;
+      }
+      
+      // Method 2: Check if checkbox is inside a label
+      const parentLabel = checkbox.closest('label');
+      if (parentLabel) labelText += parentLabel.textContent;
+      
+      // Method 3: Check nearby text (next siblings, parent text)
+      const parent = checkbox.parentElement;
+      if (parent) {
+        labelText += parent.textContent;
+      }
+      
+      // Method 4: Check for text in the same row/container
+      const container = checkbox.closest('tr, div, span, p');
+      if (container) {
+        labelText += container.textContent;
       }
   
-      words.forEach(word => {
-        const wordElement = document.createElement('span');
-        wordElement.className = 'detected-word';
-        wordElement.textContent = word;
-        wordElement.addEventListener('click', () => this.highlightMatchingTags(word));
-        wordList.appendChild(wordElement);
-      });
+      return labelText;
     }
   
-    highlightMatchingTags(word) {
+    autoClickCheckbox(checkbox, keyword, category) {
+      try {
+        // Simulate a real click
+        checkbox.click();
+        
+        // Also trigger change event
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        
+        // Log the action
+        this.logDetection(`✅ Auto-clicked checkbox for "${keyword}" (${category})`, 'success');
+        
+        // Auto-select corresponding tag in our panel
+        this.autoSelectTag(category);
+        
+        this.showNotification(`Auto-clicked: ${keyword}`);
+        
+      } catch (error) {
+        this.logDetection(`❌ Failed to click checkbox for "${keyword}": ${error.message}`, 'error');
+      }
+    }
+  
+    autoSelectTag(category) {
       const allTags = {...this.roadFacingTags, ...this.driverFacingTags};
-      let matchFound = false;
-  
+      
+      // Find matching tag
       Object.entries(allTags).forEach(([key, value]) => {
-        if (value.toLowerCase().includes(word.toLowerCase())) {
-          this.toggleTag(key);
-          matchFound = true;
+        if (value.toLowerCase().includes(category.toLowerCase()) || 
+            category.toLowerCase().includes(value.toLowerCase().split(' ')[0])) {
+          
+          this.selectedTags.add(key);
+          const tagElement = document.querySelector(`[data-key="${key}"]`);
+          if (tagElement) {
+            tagElement.classList.add('auto-selected');
+          }
         }
       });
+    }
   
-      if (matchFound) {
-        this.showNotification(`Auto-selected tags containing "${word}"`);
-        // Mark the word as matched
-        event.target.classList.add('matched');
+    logDetection(message, type = 'info') {
+      const logContainer = document.getElementById('detection-log');
+      const logEntry = document.createElement('div');
+      logEntry.className = `log-entry ${type}`;
+      logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+      
+      logContainer.appendChild(logEntry);
+      logContainer.scrollTop = logContainer.scrollHeight;
+      
+      // Keep only last 20 entries
+      while (logContainer.children.length > 20) {
+        logContainer.removeChild(logContainer.firstChild);
       }
+    }
+  
+    updateCheckboxDisplay() {
+      const checkboxList = document.getElementById('checkbox-list');
+      checkboxList.innerHTML = '';
+      
+      const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach((checkbox, index) => {
+        const labelText = this.getCheckboxLabelText(checkbox);
+        const info = document.createElement('div');
+        info.className = 'checkbox-info';
+        info.textContent = `${index + 1}. ${checkbox.checked ? '✅' : '⬜'} ${labelText.substring(0, 50)}...`;
+        checkboxList.appendChild(info);
+      });
     }
   
     attachEventListeners() {
+      // Auto-detection toggle
+      document.getElementById('auto-detection-toggle').addEventListener('change', (e) => {
+        this.autoDetectionEnabled = e.target.checked;
+        this.saveSettings();
+        this.logDetection(`Auto-detection ${this.autoDetectionEnabled ? 'enabled' : 'disabled'}`);
+      });
+  
       // Keyboard shortcuts
       document.addEventListener('keydown', (e) => {
-        // Handle Ctrl combinations
         if (e.ctrlKey || e.metaKey) {
           switch(e.key) {
             case 'ArrowUp':
@@ -355,7 +493,7 @@ class DriveBehaviorTagger {
               e.preventDefault();
               this.decreaseSpeed();
               break;
-            case ' ': // Space key
+            case ' ':
               e.preventDefault();
               this.submitTags();
               break;
@@ -363,7 +501,6 @@ class DriveBehaviorTagger {
           return;
         }
   
-        // Alt combinations
         if (e.altKey && !e.ctrlKey) {
           switch(e.key.toLowerCase()) {
             case 'f':
@@ -374,7 +511,7 @@ class DriveBehaviorTagger {
           return;
         }
   
-        // Function keys for road facing tags (F1-F12)
+        // Function keys for road facing tags
         if (e.key.startsWith('F') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
           e.preventDefault();
           const keyNum = e.key.substring(1);
@@ -396,7 +533,6 @@ class DriveBehaviorTagger {
           return;
         }
   
-        // Number keys when waiting for driver tag
         if (this.waitingForDriverTag && /^[1-5]$/.test(e.key)) {
           e.preventDefault();
           const tagKey = `d${e.key}`;
@@ -406,12 +542,11 @@ class DriveBehaviorTagger {
         }
       });
   
-      // Submit button
+      // Submit and clear buttons
       document.getElementById('submit-tags').addEventListener('click', () => {
         this.submitTags();
       });
   
-      // Clear button
       document.getElementById('clear-tags').addEventListener('click', () => {
         this.clearAllTags();
       });
@@ -453,7 +588,7 @@ class DriveBehaviorTagger {
       
       if (this.selectedTags.has(tagKey)) {
         this.selectedTags.delete(tagKey);
-        tagElement.classList.remove('selected');
+        tagElement.classList.remove('selected', 'auto-selected');
       } else {
         this.selectedTags.add(tagKey);
         tagElement.classList.add('selected');
@@ -461,7 +596,6 @@ class DriveBehaviorTagger {
   
       this.saveSettings();
       
-      // Show which tag was toggled
       const tagName = this.roadFacingTags[tagKey] || this.driverFacingTags[tagKey];
       const action = this.selectedTags.has(tagKey) ? 'Selected' : 'Deselected';
       this.showNotification(`${action}: ${tagName}`);
@@ -469,8 +603,8 @@ class DriveBehaviorTagger {
   
     clearAllTags() {
       this.selectedTags.clear();
-      document.querySelectorAll('.tag-item.selected').forEach(el => {
-        el.classList.remove('selected');
+      document.querySelectorAll('.tag-item.selected, .tag-item.auto-selected').forEach(el => {
+        el.classList.remove('selected', 'auto-selected');
       });
       this.saveSettings();
       this.showNotification('All tags cleared');
@@ -519,34 +653,30 @@ class DriveBehaviorTagger {
         return this.roadFacingTags[key] || this.driverFacingTags[key];
       });
   
-      // Create submission data
       const submissionData = {
         timestamp: new Date().toISOString(),
         tags: selectedTagNames,
         speed: this.currentSpeed,
         url: window.location.href,
-        tagKeys: Array.from(this.selectedTags)
+        tagKeys: Array.from(this.selectedTags),
+        autoDetected: true
       };
   
-      // Log to console (replace with actual API call to your backend)
-      console.log('Submitting tags:', submissionData);
+      console.log('Submitting auto-detected tags:', submissionData);
       
-      // Store in localStorage as backup
       const existingData = JSON.parse(localStorage.getItem('submittedTags') || '[]');
       existingData.push(submissionData);
       localStorage.setItem('submittedTags', JSON.stringify(existingData));
   
-      // Show confirmation
+      this.logDetection(`📤 Submitted ${selectedTagNames.length} tags`, 'success');
       this.showNotification(`Submitted ${selectedTagNames.length} tags successfully!`);
   
-      // Clear selected tags after submission
       setTimeout(() => {
         this.clearAllTags();
       }, 1000);
     }
   
     showNotification(message) {
-      // Remove existing notification
       const existing = document.querySelector('.notification');
       if (existing) existing.remove();
   
@@ -565,7 +695,8 @@ class DriveBehaviorTagger {
     saveSettings() {
       const settings = {
         selectedTags: Array.from(this.selectedTags),
-        currentSpeed: this.currentSpeed
+        currentSpeed: this.currentSpeed,
+        autoDetectionEnabled: this.autoDetectionEnabled
       };
       localStorage.setItem('behaviorTaggerSettings', JSON.stringify(settings));
     }
@@ -577,8 +708,8 @@ class DriveBehaviorTagger {
           const settings = JSON.parse(saved);
           this.selectedTags = new Set(settings.selectedTags || []);
           this.currentSpeed = settings.currentSpeed || 1.0;
+          this.autoDetectionEnabled = settings.autoDetectionEnabled !== false;
           
-          // Update UI
           this.selectedTags.forEach(key => {
             const element = document.querySelector(`[data-key="${key}"]`);
             if (element) element.classList.add('selected');
@@ -587,6 +718,11 @@ class DriveBehaviorTagger {
           const speedDisplay = document.getElementById('speed-display');
           if (speedDisplay) {
             speedDisplay.textContent = `${this.currentSpeed}x`;
+          }
+  
+          const autoToggle = document.getElementById('auto-detection-toggle');
+          if (autoToggle) {
+            autoToggle.checked = this.autoDetectionEnabled;
           }
         } catch (e) {
           console.log('Error loading settings:', e);

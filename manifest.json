@@ -2,7 +2,7 @@
     "manifest_version": 3,
     "name": "Drive Behavior Tagger",
     "version": "1.0",
-    "description": "Use shortcuts to tag driving behaviors automatically",
+    "description": "Auto-detect words and click checkboxes to tag behaviors",
     "permissions": [
       "activeTab",
       "storage"
