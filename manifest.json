@@ -1,0 +1,44 @@
+{
+    "manifest_version": 3,
+    "name": "Drive Behavior Tagger",
+    "version": "1.0",
+    "description": "Use shortcuts to tag driving behaviors automatically",
+    "permissions": [
+      "activeTab",
+      "storage"
+    ],
+    "content_scripts": [{
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "commands": {
+      "increase-speed": {
+        "suggested_key": {
+          "default": "Ctrl+Up"
+        },
+        "description": "Increase video playback speed"
+      },
+      "decrease-speed": {
+        "suggested_key": {
+          "default": "Ctrl+Down"
+        },
+        "description": "Decrease video playback speed"
+      },
+      "submit-tags": {
+        "suggested_key": {
+          "default": "Ctrl+Space"
+        },
+        "description": "Submit selected tags"
+      },
+      "toggle-fullscreen": {
+        "suggested_key": {
+          "default": "Alt+F"
+        },
+        "description": "Toggle fullscreen mode"
+      }
+    }
+  }
+  
