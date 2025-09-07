@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "Drive Behavior Tagger Pro",
-    "version": "2.0",
-    "description": "Draggable auto-detect and tag driving behaviors",
+    "version": "2.1",
+    "description": "Draggable auto-detect and tag driving behaviors with accurate checkbox mapping",
     "permissions": [
       "activeTab",
       "storage"

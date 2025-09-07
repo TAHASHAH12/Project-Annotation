@@ -2,10 +2,10 @@ class DraggableBehaviorTagger {
     constructor() {
       // Configuration
       this.config = {
-        scanInterval: 5000, // Increased to reduce CPU usage
+        scanInterval: 5000,
         maxLogEntries: 8,
         debounceDelay: 500,
-        snapTolerance: 20 // Pixels for edge snapping
+        snapTolerance: 20
       };
   
       // Tag definitions
@@ -32,24 +32,40 @@ class DraggableBehaviorTagger {
         'd5': 'Smoking'
       };
   
-      // Keyword mapping for detection only (no auto-clicking)
-      this.keywordMap = new Map([
-        ['tailgating', ['f1']],
-        ['following', ['f1']],
-        ['cutoff', ['f2']],
-        ['lane change', ['f3']],
-        ['stop sign', ['f4']],
-        ['red light', ['f5']],
-        ['collision', ['f7', 'f12']],
-        ['near miss', ['f7']],
-        ['distraction', ['d1']],
-        ['phone', ['d2']],
-        ['cellphone', ['d2']],
-        ['drowsy', ['d3']],
-        ['tired', ['d3']],
-        ['seatbelt', ['d4']],
-        ['smoking', ['d5']]
+      // Enhanced keyword to checkbox mapping with more specific terms
+      this.tagToCheckboxMapping = new Map([
+        // Road Facing Tags - more specific matching
+        ['f1', ['tailgating', 'close following', 'following too closely', 'tailgate']],
+        ['f2', ['lane cutoff', 'cut off', 'lane cut-off', 'cutoff']],
+        ['f3', ['unsafe lane change', 'lane change', 'improper lane', 'lane changing']],
+        ['f4', ['stop sign violation', 'stop sign', 'stop-sign', 'rolling stop']],
+        ['f5', ['red light violation', 'running red light', 'red light', 'light violation']],
+        ['f6', ['forward collision warning', 'collision warning', 'fcw', 'collision-warning']],
+        ['f7', ['near collision', 'near miss', 'near-collision', 'almost collision']],
+        ['f8', ['unsafe parking', 'parking violation', 'unsafe-parking', 'improper parking']],
+        ['f9', ['alert driving', 'alert-driving', 'defensive driving', 'attentive']],
+        ['f10', ['safe distancing', 'safe distance', 'proper following', 'safe-distancing']],
+        ['f11', ['possible collision', 'potential collision', 'possible-collision', 'collision risk']],
+        ['f12', ['collision', 'crash', 'accident', 'impact']],
+        
+        // Driver Facing Tags - more specific matching
+        ['d1', ['driver distraction', 'distracted driving', 'distraction', 'inattentive']],
+        ['d2', ['cellphone usage', 'phone use', 'cellphone', 'mobile phone', 'texting']],
+        ['d3', ['drowsiness', 'fatigue', 'sleepy driving', 'tired', 'microsleep']],
+        ['d4', ['seatbelt violation', 'seat belt', 'unbuckled', 'belt violation', 'no seatbelt']],
+        ['d5', ['smoking while driving', 'smoking', 'cigarette', 'tobacco use', 'vaping']]
       ]);
+  
+      // Reverse mapping for keyword detection
+      this.keywordMap = new Map();
+      this.tagToCheckboxMapping.forEach((keywords, tagKey) => {
+        keywords.forEach(keyword => {
+          if (!this.keywordMap.has(keyword)) {
+            this.keywordMap.set(keyword, []);
+          }
+          this.keywordMap.get(keyword).push(tagKey);
+        });
+      });
   
       // State management
       this.state = {
@@ -59,6 +75,7 @@ class DraggableBehaviorTagger {
         isProcessing: false,
         detectedWords: new Set(),
         foundSubmitButtons: [],
+        foundCheckboxes: new Map(), // Map tagKey to checkbox elements
         panelPosition: { top: 20, left: 20 },
         panelSize: { width: 320, height: 'auto' },
         isDragging: false,
@@ -108,7 +125,7 @@ class DraggableBehaviorTagger {
             <label class="toggle-switch">
               <input type="checkbox" id="auto-detection-toggle" ${this.state.autoDetectionEnabled ? 'checked' : ''}>
               <span class="toggle-slider"></span>
-              Word Detection
+              Word Detection & Auto-Check
             </label>
             <div class="detected-counter">
               Found: <span id="detected-count">0</span> keywords
@@ -147,6 +164,11 @@ class DraggableBehaviorTagger {
             </div>
           </div>
   
+          <div class="checkbox-status-section">
+            <div class="section-header">☑️ Checkbox Status</div>
+            <div id="checkbox-status-list"></div>
+          </div>
+  
           <div class="submit-buttons-section">
             <div class="section-header">📝 Found Submit Buttons</div>
             <div id="submit-buttons-list"></div>
@@ -160,7 +182,7 @@ class DraggableBehaviorTagger {
         <div class="resize-handle" id="resize-handle"></div>
       `;
   
-      // Enhanced CSS with draggable functionality
+      // Enhanced CSS with checkbox status styling
       const style = document.createElement('style');
       style.textContent = `
         #behavior-tagger-panel {
@@ -339,6 +361,12 @@ class DraggableBehaviorTagger {
           transform: scale(1.05);
         }
         
+        .detected-keyword.clicked {
+          background: #4CAF50;
+          color: white;
+          border-color: #4CAF50;
+        }
+        
         .tag-sections {
           margin-bottom: 12px;
         }
@@ -382,6 +410,16 @@ class DraggableBehaviorTagger {
           color: white;
           border-color: #F57C00;
           animation: pulse 2s infinite;
+        }
+        
+        .tag-item.checkbox-found {
+          border-left: 4px solid #2196F3;
+          background: #e3f2fd;
+        }
+        
+        .tag-item.checkbox-checked {
+          border-left: 4px solid #4CAF50;
+          background: #e8f5e8;
         }
         
         @keyframes pulse {
@@ -485,11 +523,13 @@ class DraggableBehaviorTagger {
           background: #d32f2f;
         }
         
+        .checkbox-status-section,
         .submit-buttons-section,
         .log-section {
           margin-bottom: 8px;
         }
         
+        #checkbox-status-list,
         #submit-buttons-list,
         #activity-log {
           max-height: 80px;
@@ -499,6 +539,45 @@ class DraggableBehaviorTagger {
           padding: 4px;
           border-radius: 4px;
           border: 1px solid #eee;
+        }
+        
+        .checkbox-status-item {
+          padding: 2px 4px;
+          margin: 1px 0;
+          background: white;
+          border-radius: 2px;
+          border-left: 3px solid #ddd;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        
+        .checkbox-status-item.found {
+          border-left-color: #2196F3;
+        }
+        
+        .checkbox-status-item.checked {
+          border-left-color: #4CAF50;
+          background: #f1f8e9;
+        }
+        
+        .checkbox-click-btn {
+          background: #2196F3;
+          color: white;
+          border: none;
+          padding: 1px 4px;
+          border-radius: 2px;
+          font-size: 8px;
+          cursor: pointer;
+        }
+        
+        .checkbox-click-btn:hover {
+          background: #1976D2;
+        }
+        
+        .checkbox-click-btn:disabled {
+          background: #ccc;
+          cursor: not-allowed;
         }
         
         .submit-btn-item {
@@ -634,7 +713,7 @@ class DraggableBehaviorTagger {
       let panelStart = { x: 0, y: 0 };
   
       header.addEventListener('mousedown', (e) => {
-        if (e.target.tagName === 'BUTTON') return; // Don't drag when clicking buttons
+        if (e.target.tagName === 'BUTTON') return;
         
         isDragging = true;
         dragStart = { x: e.clientX, y: e.clientY };
@@ -657,14 +736,12 @@ class DraggableBehaviorTagger {
         let newX = panelStart.x + deltaX;
         let newY = panelStart.y + deltaY;
   
-        // Screen boundaries
         const maxX = window.innerWidth - panel.offsetWidth;
         const maxY = window.innerHeight - panel.offsetHeight;
         
         newX = Math.max(0, Math.min(newX, maxX));
         newY = Math.max(0, Math.min(newY, maxY));
   
-        // Edge snapping
         if (newX < this.config.snapTolerance) newX = 0;
         if (newY < this.config.snapTolerance) newY = 0;
         if (newX > maxX - this.config.snapTolerance) newX = maxX;
@@ -729,14 +806,12 @@ class DraggableBehaviorTagger {
     }
   
     startDetection() {
-      // Periodic scanning for keywords and submit buttons
       setInterval(() => {
         if (this.state.autoDetectionEnabled && !this.state.isProcessing) {
           this.debouncedScan();
         }
       }, this.config.scanInterval);
   
-      // Page change detection
       const observer = new MutationObserver((mutations) => {
         const hasRelevantChanges = mutations.some(mutation => 
           mutation.type === 'childList' && mutation.addedNodes.length > 0
@@ -761,13 +836,12 @@ class DraggableBehaviorTagger {
       this.state.isProcessing = true;
   
       try {
-        // Detect keywords (but don't click anything)
         this.detectKeywords();
-        
-        // Find submit buttons
+        this.findCheckboxes();
         this.findSubmitButtons();
         
         this.updateDetectedWordsUI();
+        this.updateCheckboxStatusUI();
         this.updateSubmitButtonsUI();
         
       } catch (error) {
@@ -781,12 +855,10 @@ class DraggableBehaviorTagger {
       const pageText = document.body.textContent.toLowerCase();
       this.state.detectedWords.clear();
   
-      // Detect keywords and highlight corresponding tags
       for (const [keyword, tagKeys] of this.keywordMap) {
         if (pageText.includes(keyword)) {
           this.state.detectedWords.add(keyword);
           
-          // Highlight tags that match detected keywords
           tagKeys.forEach(tagKey => {
             const tagElement = document.querySelector(`[data-key="${tagKey}"]`);
             if (tagElement && !this.state.selectedTags.has(tagKey)) {
@@ -799,11 +871,120 @@ class DraggableBehaviorTagger {
       document.getElementById('detected-count').textContent = this.state.detectedWords.size;
     }
   
+    // New method to calculate match score
+    calculateMatchScore(labelText, keyword) {
+      const keywordLower = keyword.toLowerCase();
+      
+      // Exact match gets highest score
+      if (labelText.includes(keywordLower)) {
+        // Check if it's a word boundary match (not just a substring)
+        const regex = new RegExp(`\\b${keywordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+        if (regex.test(labelText)) {
+          return 1.0; // Perfect match
+        }
+        return 0.8; // Good match but not word boundary
+      }
+      
+      // Check for partial word matches
+      const keywordWords = keywordLower.split(/[\s-_]+/);
+      const labelWords = labelText.split(/[\s-_]+/);
+      
+      let matchedWords = 0;
+      for (const keywordWord of keywordWords) {
+        if (keywordWord.length > 2) { // Skip very short words
+          for (const labelWord of labelWords) {
+            if (labelWord.includes(keywordWord) || keywordWord.includes(labelWord)) {
+              matchedWords++;
+              break;
+            }
+          }
+        }
+      }
+      
+      // Return score based on percentage of matched words
+      return keywordWords.length > 0 ? matchedWords / keywordWords.length : 0;
+    }
+  
+    findCheckboxes() {
+      // Clear previous mappings
+      this.state.foundCheckboxes.clear();
+  
+      const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+      
+      checkboxes.forEach(checkbox => {
+        const labelText = this.getCheckboxLabelText(checkbox).toLowerCase();
+        
+        // Skip if no meaningful label text
+        if (!labelText || labelText.trim().length < 3) return;
+        
+        let bestMatch = null;
+        let bestScore = 0;
+        
+        // Try to find the best matching tag based on keywords
+        for (const [tagKey, keywords] of this.tagToCheckboxMapping) {
+          for (const keyword of keywords) {
+            // Calculate match score based on how well the keyword matches
+            const score = this.calculateMatchScore(labelText, keyword);
+            
+            if (score > bestScore && score > 0.7) { // Only accept strong matches
+              bestMatch = tagKey;
+              bestScore = score;
+            }
+          }
+        }
+        
+        // Only assign checkbox to the best matching tag
+        if (bestMatch) {
+          if (!this.state.foundCheckboxes.has(bestMatch)) {
+            this.state.foundCheckboxes.set(bestMatch, []);
+          }
+          this.state.foundCheckboxes.get(bestMatch).push(checkbox);
+          
+          // Update tag visual state
+          const tagElement = document.querySelector(`[data-key="${bestMatch}"]`);
+          if (tagElement) {
+            if (checkbox.checked) {
+              tagElement.classList.add('checkbox-checked');
+            } else {
+              tagElement.classList.add('checkbox-found');
+            }
+          }
+        }
+      });
+    }
+  
+    getCheckboxLabelText(checkbox) {
+      let labelText = '';
+      
+      // Method 1: Label with 'for' attribute
+      if (checkbox.id) {
+        const label = document.querySelector(`label[for="${checkbox.id}"]`);
+        if (label) labelText += label.textContent;
+      }
+      
+      // Method 2: Checkbox inside label
+      const parentLabel = checkbox.closest('label');
+      if (parentLabel) labelText += ' ' + parentLabel.textContent;
+      
+      // Method 3: Nearby text
+      const parent = checkbox.parentElement;
+      if (parent) {
+        labelText += ' ' + parent.textContent;
+      }
+      
+      // Method 4: Container text
+      const container = checkbox.closest('tr, div, span, p, li');
+      if (container) {
+        labelText += ' ' + container.textContent;
+      }
+  
+      return labelText.trim();
+    }
+  
     findSubmitButtons() {
-      // Find submit buttons by various methods
       const submitButtons = [];
       
-      // Method 1: Input type submit
+      // Input type submit
       document.querySelectorAll('input[type="submit"]').forEach((btn, index) => {
         submitButtons.push({
           element: btn,
@@ -813,7 +994,7 @@ class DraggableBehaviorTagger {
         });
       });
   
-      // Method 2: Button elements with submit type
+      // Button elements with submit type
       document.querySelectorAll('button[type="submit"]').forEach((btn, index) => {
         submitButtons.push({
           element: btn,
@@ -823,7 +1004,7 @@ class DraggableBehaviorTagger {
         });
       });
   
-      // Method 3: Buttons with submit-related text
+      // Buttons with submit-related text
       document.querySelectorAll('button').forEach((btn, index) => {
         const text = btn.textContent.toLowerCase();
         if (text.includes('submit') || text.includes('send') || text.includes('save') || 
@@ -854,14 +1035,40 @@ class DraggableBehaviorTagger {
         keywordElement.className = 'detected-keyword';
         keywordElement.textContent = keyword;
         keywordElement.addEventListener('click', () => {
-          this.logActivity(`Clicked keyword: ${keyword}`, 'info');
-          // Show which tags this keyword relates to
-          const relatedTags = this.keywordMap.get(keyword) || [];
-          if (relatedTags.length > 0) {
-            this.showNotification(`Keyword "${keyword}" relates to: ${relatedTags.join(', ')}`);
-          }
+          this.handleKeywordClick(keyword, keywordElement);
         });
         container.appendChild(keywordElement);
+      });
+    }
+  
+    updateCheckboxStatusUI() {
+      const container = document.getElementById('checkbox-status-list');
+      container.innerHTML = '';
+  
+      if (this.state.foundCheckboxes.size === 0) {
+        container.innerHTML = '<div style="color: #999; font-size: 9px;">No matching checkboxes found</div>';
+        return;
+      }
+  
+      this.state.foundCheckboxes.forEach((checkboxes, tagKey) => {
+        const tagName = this.roadFacingTags[tagKey] || this.driverFacingTags[tagKey];
+        
+        checkboxes.forEach((checkbox, index) => {
+          const statusElement = document.createElement('div');
+          statusElement.className = `checkbox-status-item ${checkbox.checked ? 'checked' : 'found'}`;
+          
+          const status = checkbox.checked ? '✅' : '☐';
+          const buttonText = checkbox.checked ? 'Uncheck' : 'Check';
+          
+          statusElement.innerHTML = `
+            <span>${status} ${tagName} #${index + 1}</span>
+            <button class="checkbox-click-btn" onclick="window.behaviorTagger.clickCheckbox('${tagKey}', ${index})">
+              ${buttonText}
+            </button>
+          `;
+          
+          container.appendChild(statusElement);
+        });
       });
     }
   
@@ -874,7 +1081,7 @@ class DraggableBehaviorTagger {
         return;
       }
   
-      this.state.foundSubmitButtons.slice(0, 5).forEach(btnInfo => { // Show max 5
+      this.state.foundSubmitButtons.slice(0, 5).forEach(btnInfo => {
         const btnElement = document.createElement('div');
         btnElement.className = 'submit-btn-item';
         btnElement.textContent = `${btnInfo.text} (${btnInfo.type})`;
@@ -890,7 +1097,92 @@ class DraggableBehaviorTagger {
       });
     }
   
+    handleKeywordClick(keyword, keywordElement) {
+      const relatedTags = this.keywordMap.get(keyword) || [];
+      
+      relatedTags.forEach(tagKey => {
+        // Auto-select the tag
+        this.toggleTag(tagKey, true);
+        
+        // Also try to click corresponding checkbox
+        if (this.state.foundCheckboxes.has(tagKey)) {
+          const checkboxes = this.state.foundCheckboxes.get(tagKey);
+          checkboxes.forEach(checkbox => {
+            if (!checkbox.checked) {
+              this.clickCheckboxElement(checkbox, tagKey);
+            }
+          });
+        }
+      });
+      
+      // Mark keyword as clicked
+      keywordElement.classList.add('clicked');
+      this.logActivity(`Clicked keyword: ${keyword} → Selected related tags`, 'success');
+    }
+  
+    clickCheckbox(tagKey, checkboxIndex) {
+      if (this.state.foundCheckboxes.has(tagKey)) {
+        const checkboxes = this.state.foundCheckboxes.get(tagKey);
+        if (checkboxes[checkboxIndex]) {
+          this.clickCheckboxElement(checkboxes[checkboxIndex], tagKey);
+        }
+      }
+    }
+  
+    clickCheckboxElement(checkbox, tagKey) {
+      try {
+        // Simulate natural checkbox interaction
+        const clickEvent = new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          view: window
+        });
+        
+        checkbox.dispatchEvent(clickEvent);
+        
+        // Also fire change event
+        const changeEvent = new Event('change', { bubbles: true });
+        checkbox.dispatchEvent(changeEvent);
+        
+        const tagName = this.roadFacingTags[tagKey] || this.driverFacingTags[tagKey];
+        const action = checkbox.checked ? 'Checked' : 'Unchecked';
+        this.logActivity(`${action} checkbox for: ${tagName}`, 'success');
+        
+        // Update UI
+        setTimeout(() => {
+          this.updateCheckboxStatusUI();
+          this.updateTagVisualState(tagKey);
+        }, 100);
+        
+      } catch (error) {
+        this.logActivity(`Failed to click checkbox: ${error.message}`, 'error');
+      }
+    }
+  
+    updateTagVisualState(tagKey) {
+      const tagElement = document.querySelector(`[data-key="${tagKey}"]`);
+      if (!tagElement) return;
+  
+      // Remove all visual states
+      tagElement.classList.remove('checkbox-found', 'checkbox-checked', 'detected');
+  
+      // Check if any associated checkboxes are checked
+      if (this.state.foundCheckboxes.has(tagKey)) {
+        const checkboxes = this.state.foundCheckboxes.get(tagKey);
+        const hasChecked = checkboxes.some(cb => cb.checked);
+        
+        if (hasChecked) {
+          tagElement.classList.add('checkbox-checked');
+        } else {
+          tagElement.classList.add('checkbox-found');
+        }
+      }
+    }
+  
     attachEventListeners() {
+      // Make the tagger instance available globally for checkbox clicking
+      window.behaviorTagger = this;
+  
       // Auto-detection toggle
       document.getElementById('auto-detection-toggle').addEventListener('change', (e) => {
         this.state.autoDetectionEnabled = e.target.checked;
@@ -938,23 +1230,20 @@ class DraggableBehaviorTagger {
     }
   
     selectNoTag() {
-      // Clear all selected tags and mark as "No Tag"
       this.clearAllTags();
       this.logActivity('Selected: No Tag', 'info');
       this.showNotification('No Tag selected');
-      
-      // You could add a special "no-tag" state here if needed
       this.state.selectedTags.add('no-tag');
     }
   
-    toggleTag(tagKey) {
+    toggleTag(tagKey, forceSelect = false) {
       const tagElement = document.querySelector(`[data-key="${tagKey}"]`);
       if (!tagElement) return;
   
       // Remove detected highlighting when manually selected
       tagElement.classList.remove('detected');
   
-      if (this.state.selectedTags.has(tagKey)) {
+      if (this.state.selectedTags.has(tagKey) && !forceSelect) {
         this.state.selectedTags.delete(tagKey);
         tagElement.classList.remove('selected');
       } else {
@@ -963,6 +1252,16 @@ class DraggableBehaviorTagger {
         
         this.state.selectedTags.add(tagKey);
         tagElement.classList.add('selected');
+  
+        // Auto-click corresponding checkboxes when tag is selected
+        if (this.state.foundCheckboxes.has(tagKey)) {
+          const checkboxes = this.state.foundCheckboxes.get(tagKey);
+          checkboxes.forEach(checkbox => {
+            if (!checkbox.checked) {
+              this.clickCheckboxElement(checkbox, tagKey);
+            }
+          });
+        }
       }
   
       const tagName = this.roadFacingTags[tagKey] || this.driverFacingTags[tagKey];
@@ -1010,7 +1309,8 @@ class DraggableBehaviorTagger {
         speed: this.state.currentSpeed,
         url: window.location.href,
         detectedKeywords: Array.from(this.state.detectedWords),
-        submitButtonsFound: this.state.foundSubmitButtons.length
+        submitButtonsFound: this.state.foundSubmitButtons.length,
+        checkboxesFound: this.state.foundCheckboxes.size
       };
   
       // Save submission
