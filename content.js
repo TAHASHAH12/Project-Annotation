@@ -1,11 +1,11 @@
-class OptimizedDriveBehaviorTagger {
+class DraggableBehaviorTagger {
     constructor() {
       // Configuration
       this.config = {
-        scanInterval: 3000, // Increased from 2s to 3s for better performance
-        maxLogEntries: 10,  // Reduced from 20 to 10
-        debounceDelay: 300, // Debounce DOM queries
-        batchSize: 50       // Process checkboxes in batches
+        scanInterval: 5000, // Increased to reduce CPU usage
+        maxLogEntries: 8,
+        debounceDelay: 500,
+        snapTolerance: 20 // Pixels for edge snapping
       };
   
       // Tag definitions
@@ -32,35 +32,23 @@ class OptimizedDriveBehaviorTagger {
         'd5': 'Smoking'
       };
   
-      // Optimized keyword matching using Map for O(1) lookup
+      // Keyword mapping for detection only (no auto-clicking)
       this.keywordMap = new Map([
         ['tailgating', ['f1']],
         ['following', ['f1']],
         ['cutoff', ['f2']],
-        ['cut off', ['f2']],
         ['lane change', ['f3']],
-        ['unsafe lane', ['f3']],
         ['stop sign', ['f4']],
         ['red light', ['f5']],
-        ['collision', ['f7', 'f11', 'f12']],
-        ['crash', ['f7', 'f12']],
+        ['collision', ['f7', 'f12']],
         ['near miss', ['f7']],
         ['distraction', ['d1']],
-        ['distracted', ['d1']],
         ['phone', ['d2']],
         ['cellphone', ['d2']],
-        ['mobile', ['d2']],
-        ['texting', ['d2']],
         ['drowsy', ['d3']],
-        ['sleepy', ['d3']],
         ['tired', ['d3']],
-        ['fatigue', ['d3']],
-        ['seat belt', ['d4']],
         ['seatbelt', ['d4']],
-        ['belt', ['d4']],
-        ['smoking', ['d5']],
-        ['smoke', ['d5']],
-        ['cigarette', ['d5']]
+        ['smoking', ['d5']]
       ]);
   
       // State management
@@ -69,198 +57,338 @@ class OptimizedDriveBehaviorTagger {
         currentSpeed: 1.0,
         autoDetectionEnabled: true,
         isProcessing: false,
-        cachedCheckboxes: new WeakMap(),
-        observedElements: new Set()
+        detectedWords: new Set(),
+        foundSubmitButtons: [],
+        panelPosition: { top: 20, left: 20 },
+        panelSize: { width: 320, height: 'auto' },
+        isDragging: false,
+        isResizing: false,
+        dragOffset: { x: 0, y: 0 }
       };
   
-      // Performance tracking
-      this.performance = {
-        scanCount: 0,
-        clickCount: 0,
-        lastScanTime: 0
-      };
-  
-      // Debounced functions
       this.debouncedScan = this.debounce(this.performScan.bind(this), this.config.debounceDelay);
-      this.debouncedUpdate = this.debounce(this.updateUI.bind(this), 100);
+      this.debouncedSave = this.debounce(this.saveSettings.bind(this), 1000);
   
       this.init();
     }
   
-    // Utility: Debounce function for performance optimization
     debounce(func, wait) {
       let timeout;
-      return function executedFunction(...args) {
-        const later = () => {
-          clearTimeout(timeout);
-          func(...args);
-        };
+      return function(...args) {
         clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-      };
-    }
-  
-    // Utility: Throttle function for limiting execution frequency
-    throttle(func, limit) {
-      let inThrottle;
-      return function() {
-        const args = arguments;
-        const context = this;
-        if (!inThrottle) {
-          func.apply(context, args);
-          inThrottle = true;
-          setTimeout(() => inThrottle = false, limit);
-        }
+        timeout = setTimeout(() => func.apply(this, args), wait);
       };
     }
   
     async init() {
       try {
         await this.loadSettings();
-        this.createOptimizedUI();
-        this.attachOptimizedEventListeners();
-        this.startOptimizedDetection();
+        this.createDraggableUI();
+        this.attachEventListeners();
+        this.startDetection();
+        this.restorePosition();
       } catch (error) {
         console.error('Extension initialization failed:', error);
       }
     }
   
-    createOptimizedUI() {
-      // Use DocumentFragment for batch DOM operations
-      const fragment = document.createDocumentFragment();
-      
+    createDraggableUI() {
       const panel = document.createElement('div');
       panel.id = 'behavior-tagger-panel';
       panel.innerHTML = `
-        <div class="tagger-header">
-          <h3>Auto Tagger Pro</h3>
-          <button id="toggle-panel">−</button>
+        <div class="tagger-header" id="drag-handle">
+          <h3>🏷️ Behavior Tagger</h3>
+          <div class="header-controls">
+            <button id="minimize-panel" title="Minimize">−</button>
+            <button id="close-panel" title="Close">×</button>
+          </div>
         </div>
         <div class="tagger-content">
-          <div class="status-bar">
-            <span id="performance-stats">Scans: 0 | Clicks: 0</span>
-            <label class="auto-toggle">
+          <div class="detection-status">
+            <label class="toggle-switch">
               <input type="checkbox" id="auto-detection-toggle" ${this.state.autoDetectionEnabled ? 'checked' : ''}>
-              Auto-detect
+              <span class="toggle-slider"></span>
+              Word Detection
             </label>
-          </div>
-          <div class="tag-grid" id="tag-grid"></div>
-          <div class="controls">
-            <div class="speed-control">
-              Speed: <span id="speed-display">${this.state.currentSpeed}x</span>
-              <button id="speed-down">−</button>
-              <button id="speed-up">+</button>
+            <div class="detected-counter">
+              Found: <span id="detected-count">0</span> keywords
             </div>
-            <button id="submit-tags" class="btn-primary">Submit</button>
-            <button id="clear-tags" class="btn-secondary">Clear</button>
           </div>
-          <div class="log-container">
-            <div class="log-header">Activity Log</div>
-            <div id="detection-log" class="log-content"></div>
+          
+          <div class="detected-words-section">
+            <div class="section-header">🔍 Detected Keywords</div>
+            <div id="detected-words-list" class="keywords-container"></div>
+          </div>
+  
+          <div class="tag-sections">
+            <div class="tag-section">
+              <div class="section-header">🚗 Road Facing (F1-F12)</div>
+              <div id="road-tags" class="tags-grid"></div>
+            </div>
+            
+            <div class="tag-section">
+              <div class="section-header">👤 Driver Facing (D1-D5)</div>
+              <div id="driver-tags" class="tags-grid"></div>
+            </div>
+          </div>
+  
+          <div class="controls-section">
+            <div class="speed-control">
+              <span>Speed:</span>
+              <button id="speed-down" class="speed-btn">−</button>
+              <span id="speed-display">${this.state.currentSpeed}x</span>
+              <button id="speed-up" class="speed-btn">+</button>
+            </div>
+            
+            <div class="action-buttons">
+              <button id="no-tag-btn" class="btn btn-secondary">No Tag</button>
+              <button id="submit-tags-btn" class="btn btn-primary">Submit</button>
+              <button id="clear-all-btn" class="btn btn-danger">Clear</button>
+            </div>
+          </div>
+  
+          <div class="submit-buttons-section">
+            <div class="section-header">📝 Found Submit Buttons</div>
+            <div id="submit-buttons-list"></div>
+          </div>
+  
+          <div class="log-section">
+            <div class="section-header">📊 Activity Log</div>
+            <div id="activity-log"></div>
           </div>
         </div>
+        <div class="resize-handle" id="resize-handle"></div>
       `;
   
-      // Add optimized CSS with hardware acceleration
+      // Enhanced CSS with draggable functionality
       const style = document.createElement('style');
       style.textContent = `
         #behavior-tagger-panel {
           position: fixed;
-          top: 20px;
-          right: 20px;
-          width: 300px;
-          background: #fff;
-          border: 1px solid #ddd;
-          border-radius: 8px;
+          top: ${this.state.panelPosition.top}px;
+          left: ${this.state.panelPosition.left}px;
+          width: ${this.state.panelSize.width}px;
+          min-width: 300px;
+          max-width: 500px;
+          background: #ffffff;
+          border: 2px solid #2196F3;
+          border-radius: 12px;
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
           font-size: 12px;
           z-index: 2147483647;
-          box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-          max-height: 70vh;
+          box-shadow: 0 8px 32px rgba(33, 150, 243, 0.3);
+          max-height: 80vh;
           overflow: hidden;
-          transform: translateZ(0); /* Hardware acceleration */
-          will-change: transform;
+          transform: translateZ(0);
+          backdrop-filter: blur(10px);
+          transition: all 0.2s ease;
         }
+        
+        #behavior-tagger-panel:hover {
+          box-shadow: 0 12px 40px rgba(33, 150, 243, 0.4);
+        }
+        
         .tagger-header {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);
           color: white;
           padding: 8px 12px;
           display: flex;
           justify-content: space-between;
           align-items: center;
+          cursor: move;
+          user-select: none;
+          border-radius: 10px 10px 0 0;
         }
+        
+        .tagger-header:active {
+          cursor: grabbing;
+        }
+        
         .tagger-header h3 {
           margin: 0;
           font-size: 14px;
           font-weight: 600;
         }
-        #toggle-panel {
-          background: none;
+        
+        .header-controls {
+          display: flex;
+          gap: 4px;
+        }
+        
+        .header-controls button {
+          background: rgba(255, 255, 255, 0.2);
           border: none;
           color: white;
-          font-size: 16px;
+          width: 20px;
+          height: 20px;
+          border-radius: 4px;
           cursor: pointer;
-          padding: 2px;
-          border-radius: 2px;
+          font-size: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
           transition: background 0.2s;
         }
-        #toggle-panel:hover {
-          background: rgba(255,255,255,0.2);
+        
+        .header-controls button:hover {
+          background: rgba(255, 255, 255, 0.3);
         }
+        
         .tagger-content {
           padding: 12px;
-          max-height: calc(70vh - 40px);
+          max-height: 60vh;
           overflow-y: auto;
+          overflow-x: hidden;
         }
-        .status-bar {
+        
+        .detection-status {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 6px;
+          margin-bottom: 12px;
+          padding: 8px;
           background: #f8f9fa;
-          border-radius: 4px;
-          margin-bottom: 8px;
-          font-size: 10px;
+          border-radius: 6px;
+          border-left: 3px solid #2196F3;
         }
-        .auto-toggle {
+        
+        .toggle-switch {
+          position: relative;
+          display: inline-block;
+          font-size: 11px;
+          font-weight: 500;
+        }
+        
+        .toggle-switch input {
+          opacity: 0;
+          width: 0;
+          height: 0;
+        }
+        
+        .toggle-slider {
+          position: absolute;
+          cursor: pointer;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background-color: #ccc;
+          transition: 0.3s;
+          border-radius: 20px;
+          width: 40px;
+          height: 20px;
+          margin-right: 8px;
+        }
+        
+        .toggle-slider:before {
+          position: absolute;
+          content: "";
+          height: 16px;
+          width: 16px;
+          left: 2px;
+          bottom: 2px;
+          background-color: white;
+          transition: 0.3s;
+          border-radius: 50%;
+        }
+        
+        input:checked + .toggle-slider {
+          background-color: #2196F3;
+        }
+        
+        input:checked + .toggle-slider:before {
+          transform: translateX(20px);
+        }
+        
+        .detected-counter {
           font-size: 10px;
+          color: #666;
+          font-weight: 500;
+        }
+        
+        .section-header {
+          font-size: 11px;
+          font-weight: 600;
+          color: #333;
+          margin-bottom: 6px;
+          padding-bottom: 2px;
+          border-bottom: 1px solid #eee;
+        }
+        
+        .keywords-container {
           display: flex;
-          align-items: center;
+          flex-wrap: wrap;
           gap: 4px;
+          margin-bottom: 12px;
+          min-height: 20px;
         }
-        .tag-grid {
+        
+        .detected-keyword {
+          background: #FFF3E0;
+          color: #E65100;
+          padding: 2px 6px;
+          border-radius: 12px;
+          font-size: 10px;
+          cursor: pointer;
+          border: 1px solid #FFB74D;
+          transition: all 0.2s;
+        }
+        
+        .detected-keyword:hover {
+          background: #FFE0B2;
+          transform: scale(1.05);
+        }
+        
+        .tag-sections {
+          margin-bottom: 12px;
+        }
+        
+        .tag-section {
+          margin-bottom: 8px;
+        }
+        
+        .tags-grid {
           display: grid;
           grid-template-columns: 1fr;
           gap: 2px;
-          margin-bottom: 8px;
         }
+        
         .tag-item {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 4px 6px;
+          padding: 4px 8px;
           background: #f5f5f5;
-          border-radius: 3px;
+          border-radius: 4px;
           cursor: pointer;
           font-size: 10px;
           transition: all 0.15s ease;
           border: 1px solid transparent;
         }
+        
         .tag-item:hover {
-          background: #e9ecef;
+          background: #e3f2fd;
           transform: translateX(2px);
         }
+        
         .tag-item.selected {
-          background: #28a745;
+          background: #4CAF50;
           color: white;
-          border-color: #1e7e34;
-          transform: translateX(0);
+          border-color: #388E3C;
         }
-        .tag-item.auto-selected {
-          background: #fd7e14;
+        
+        .tag-item.detected {
+          background: #FF9800;
           color: white;
-          border-color: #e55a00;
+          border-color: #F57C00;
+          animation: pulse 2s infinite;
         }
+        
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.7; }
+        }
+        
         .tag-key {
           background: rgba(0,0,0,0.1);
           padding: 1px 4px;
@@ -268,382 +396,639 @@ class OptimizedDriveBehaviorTagger {
           font-size: 9px;
           font-weight: bold;
         }
-        .selected .tag-key, .auto-selected .tag-key {
+        
+        .tag-item.selected .tag-key,
+        .tag-item.detected .tag-key {
           background: rgba(255,255,255,0.3);
         }
-        .controls {
+        
+        .controls-section {
           display: flex;
-          gap: 4px;
+          justify-content: space-between;
           align-items: center;
-          margin-bottom: 8px;
-          flex-wrap: wrap;
+          margin-bottom: 12px;
+          padding: 8px;
+          background: #f8f9fa;
+          border-radius: 6px;
         }
+        
         .speed-control {
           display: flex;
           align-items: center;
           gap: 4px;
           font-size: 10px;
         }
-        #speed-display {
-          font-weight: bold;
-          color: #007bff;
-          min-width: 30px;
-          text-align: center;
-        }
-        #speed-up, #speed-down {
+        
+        .speed-btn {
           width: 20px;
           height: 20px;
           border: 1px solid #ddd;
           background: white;
           cursor: pointer;
-          border-radius: 2px;
+          border-radius: 3px;
           font-size: 12px;
           display: flex;
           align-items: center;
           justify-content: center;
         }
-        .btn-primary, .btn-secondary {
+        
+        .speed-btn:hover {
+          background: #f0f0f0;
+        }
+        
+        #speed-display {
+          font-weight: bold;
+          color: #2196F3;
+          min-width: 25px;
+          text-align: center;
+        }
+        
+        .action-buttons {
+          display: flex;
+          gap: 4px;
+        }
+        
+        .btn {
           padding: 4px 8px;
           border: none;
-          border-radius: 3px;
+          border-radius: 4px;
           cursor: pointer;
           font-size: 10px;
           font-weight: 500;
           transition: all 0.2s;
         }
+        
         .btn-primary {
-          background: #007bff;
+          background: #2196F3;
           color: white;
         }
+        
         .btn-primary:hover {
-          background: #0056b3;
+          background: #1976D2;
         }
+        
         .btn-secondary {
           background: #6c757d;
           color: white;
         }
+        
         .btn-secondary:hover {
           background: #545b62;
         }
-        .log-container {
-          border-top: 1px solid #eee;
-          padding-top: 8px;
+        
+        .btn-danger {
+          background: #f44336;
+          color: white;
         }
-        .log-header {
-          font-size: 10px;
-          font-weight: 600;
-          margin-bottom: 4px;
-          color: #666;
+        
+        .btn-danger:hover {
+          background: #d32f2f;
         }
-        .log-content {
+        
+        .submit-buttons-section,
+        .log-section {
+          margin-bottom: 8px;
+        }
+        
+        #submit-buttons-list,
+        #activity-log {
           max-height: 80px;
           overflow-y: auto;
           font-size: 9px;
           background: #f8f9fa;
           padding: 4px;
-          border-radius: 3px;
+          border-radius: 4px;
+          border: 1px solid #eee;
         }
+        
+        .submit-btn-item {
+          padding: 2px 4px;
+          margin: 1px 0;
+          background: #e7f3ff;
+          border-radius: 2px;
+          cursor: pointer;
+          border-left: 3px solid #2196F3;
+        }
+        
+        .submit-btn-item:hover {
+          background: #d0edff;
+        }
+        
         .log-entry {
           margin: 1px 0;
-          color: #666;
+          padding: 1px 2px;
+          border-radius: 2px;
           opacity: 0;
           animation: fadeIn 0.3s forwards;
         }
+        
         .log-entry.success {
-          color: #28a745;
+          color: #4CAF50;
+          background: #f1f8e9;
         }
+        
         .log-entry.error {
-          color: #dc3545;
+          color: #f44336;
+          background: #ffebee;
         }
+        
+        .log-entry.info {
+          color: #2196F3;
+          background: #e3f2fd;
+        }
+        
         @keyframes fadeIn {
           to { opacity: 1; }
         }
+        
+        .resize-handle {
+          position: absolute;
+          bottom: 0;
+          right: 0;
+          width: 15px;
+          height: 15px;
+          background: linear-gradient(-45deg, transparent 30%, #2196F3 30%, #2196F3 40%, transparent 40%, transparent 50%, #2196F3 50%, #2196F3 60%, transparent 60%);
+          cursor: se-resize;
+          border-radius: 0 0 10px 0;
+        }
+        
+        .panel-minimized .tagger-content {
+          display: none;
+        }
+        
+        .panel-minimized .resize-handle {
+          display: none;
+        }
+        
         .notification {
           position: fixed;
           top: 50px;
           left: 50%;
           transform: translateX(-50%);
-          background: #28a745;
+          background: #4CAF50;
           color: white;
           padding: 8px 16px;
-          border-radius: 4px;
+          border-radius: 6px;
           z-index: 2147483647;
           font-size: 12px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
           animation: slideIn 0.3s ease, slideOut 0.3s ease 2.7s forwards;
         }
+        
         @keyframes slideIn {
           from { transform: translate(-50%, -100%); opacity: 0; }
           to { transform: translate(-50%, 0); opacity: 1; }
         }
+        
         @keyframes slideOut {
           to { transform: translate(-50%, -100%); opacity: 0; }
         }
       `;
   
-      fragment.appendChild(style);
-      fragment.appendChild(panel);
-      document.body.appendChild(fragment);
+      document.head.appendChild(style);
+      document.body.appendChild(panel);
   
       this.renderTags();
-      this.updateUI();
+      this.setupDragAndResize();
     }
   
     renderTags() {
-      const container = document.getElementById('tag-grid');
-      const fragment = document.createDocumentFragment();
+      const roadContainer = document.getElementById('road-tags');
+      const driverContainer = document.getElementById('driver-tags');
   
-      // Combine all tags for efficient rendering
-      const allTags = [
-        ...Object.entries(this.roadFacingTags),
-        ...Object.entries(this.driverFacingTags)
-      ];
-  
-      allTags.forEach(([key, value]) => {
+      // Road facing tags
+      Object.entries(this.roadFacingTags).forEach(([key, value]) => {
         const tagElement = document.createElement('div');
         tagElement.className = 'tag-item';
         tagElement.dataset.key = key;
-        
-        // Use template literals for better performance
         tagElement.innerHTML = `
           <span class="tag-name">${value}</span>
           <span class="tag-key">${key.toUpperCase()}</span>
         `;
-  
-        // Use event delegation instead of individual listeners
-        tagElement.addEventListener('click', () => this.toggleTag(key), { passive: true });
-        fragment.appendChild(tagElement);
+        tagElement.addEventListener('click', () => this.toggleTag(key));
+        roadContainer.appendChild(tagElement);
       });
   
-      container.appendChild(fragment);
+      // Driver facing tags
+      Object.entries(this.driverFacingTags).forEach(([key, value]) => {
+        const tagElement = document.createElement('div');
+        tagElement.className = 'tag-item';
+        tagElement.dataset.key = key;
+        tagElement.innerHTML = `
+          <span class="tag-name">${value}</span>
+          <span class="tag-key">${key.toUpperCase()}</span>
+        `;
+        tagElement.addEventListener('click', () => this.toggleTag(key));
+        driverContainer.appendChild(tagElement);
+      });
     }
   
-    startOptimizedDetection() {
-      // Use more efficient MutationObserver configuration
-      const observer = new MutationObserver(
-        this.throttle((mutations) => {
-          if (!this.state.autoDetectionEnabled || this.state.isProcessing) return;
-          
-          // Only process if there are actual node changes
-          const hasRelevantChanges = mutations.some(mutation => 
-            mutation.type === 'childList' && mutation.addedNodes.length > 0
-          );
-          
-          if (hasRelevantChanges) {
-            this.debouncedScan();
-          }
-        }, 500) // Throttle to max 2 calls per second
-      );
+    setupDragAndResize() {
+      const panel = document.getElementById('behavior-tagger-panel');
+      const header = document.getElementById('drag-handle');
+      const resizeHandle = document.getElementById('resize-handle');
   
-      // Optimized observer configuration
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: false,    // Disabled for better performance
-        characterData: false  // Disabled for better performance
+      // Dragging functionality
+      let isDragging = false;
+      let dragStart = { x: 0, y: 0 };
+      let panelStart = { x: 0, y: 0 };
+  
+      header.addEventListener('mousedown', (e) => {
+        if (e.target.tagName === 'BUTTON') return; // Don't drag when clicking buttons
+        
+        isDragging = true;
+        dragStart = { x: e.clientX, y: e.clientY };
+        panelStart = { 
+          x: parseInt(window.getComputedStyle(panel).left), 
+          y: parseInt(window.getComputedStyle(panel).top) 
+        };
+        
+        panel.style.transition = 'none';
+        document.addEventListener('mousemove', handleDrag);
+        document.addEventListener('mouseup', stopDrag);
       });
   
-      // Reduced interval scanning as backup
+      const handleDrag = (e) => {
+        if (!isDragging) return;
+  
+        const deltaX = e.clientX - dragStart.x;
+        const deltaY = e.clientY - dragStart.y;
+        
+        let newX = panelStart.x + deltaX;
+        let newY = panelStart.y + deltaY;
+  
+        // Screen boundaries
+        const maxX = window.innerWidth - panel.offsetWidth;
+        const maxY = window.innerHeight - panel.offsetHeight;
+        
+        newX = Math.max(0, Math.min(newX, maxX));
+        newY = Math.max(0, Math.min(newY, maxY));
+  
+        // Edge snapping
+        if (newX < this.config.snapTolerance) newX = 0;
+        if (newY < this.config.snapTolerance) newY = 0;
+        if (newX > maxX - this.config.snapTolerance) newX = maxX;
+        if (newY > maxY - this.config.snapTolerance) newY = maxY;
+  
+        panel.style.left = newX + 'px';
+        panel.style.top = newY + 'px';
+        
+        this.state.panelPosition = { top: newY, left: newX };
+      };
+  
+      const stopDrag = () => {
+        isDragging = false;
+        panel.style.transition = 'all 0.2s ease';
+        document.removeEventListener('mousemove', handleDrag);
+        document.removeEventListener('mouseup', stopDrag);
+        this.debouncedSave();
+      };
+  
+      // Resizing functionality
+      let isResizing = false;
+      let resizeStart = { x: 0, y: 0 };
+      let sizeStart = { width: 0, height: 0 };
+  
+      resizeHandle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        isResizing = true;
+        resizeStart = { x: e.clientX, y: e.clientY };
+        sizeStart = { 
+          width: panel.offsetWidth, 
+          height: panel.offsetHeight 
+        };
+        
+        document.addEventListener('mousemove', handleResize);
+        document.addEventListener('mouseup', stopResize);
+      });
+  
+      const handleResize = (e) => {
+        if (!isResizing) return;
+  
+        const deltaX = e.clientX - resizeStart.x;
+        const deltaY = e.clientY - resizeStart.y;
+        
+        let newWidth = sizeStart.width + deltaX;
+        let newHeight = sizeStart.height + deltaY;
+        
+        newWidth = Math.max(300, Math.min(newWidth, 500));
+        newHeight = Math.max(200, Math.min(newHeight, window.innerHeight * 0.8));
+        
+        panel.style.width = newWidth + 'px';
+        panel.style.height = newHeight + 'px';
+        
+        this.state.panelSize = { width: newWidth, height: newHeight };
+      };
+  
+      const stopResize = () => {
+        isResizing = false;
+        document.removeEventListener('mousemove', handleResize);
+        document.removeEventListener('mouseup', stopResize);
+        this.debouncedSave();
+      };
+    }
+  
+    startDetection() {
+      // Periodic scanning for keywords and submit buttons
       setInterval(() => {
         if (this.state.autoDetectionEnabled && !this.state.isProcessing) {
           this.debouncedScan();
         }
       }, this.config.scanInterval);
+  
+      // Page change detection
+      const observer = new MutationObserver((mutations) => {
+        const hasRelevantChanges = mutations.some(mutation => 
+          mutation.type === 'childList' && mutation.addedNodes.length > 0
+        );
+        
+        if (hasRelevantChanges && this.state.autoDetectionEnabled) {
+          this.debouncedScan();
+        }
+      });
+  
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: false,
+        characterData: false
+      });
     }
   
     async performScan() {
       if (this.state.isProcessing) return;
       
       this.state.isProcessing = true;
-      const scanStartTime = performance.now();
   
       try {
-        // Cache page text for efficient keyword matching
-        const pageText = this.getPageTextOptimized();
+        // Detect keywords (but don't click anything)
+        this.detectKeywords();
         
-        // Find checkboxes efficiently
-        const checkboxes = this.getCheckboxesOptimized();
+        // Find submit buttons
+        this.findSubmitButtons();
         
-        // Process in batches to avoid blocking the main thread
-        await this.processCheckboxesBatched(checkboxes, pageText);
-        
-        this.performance.scanCount++;
-        this.performance.lastScanTime = performance.now() - scanStartTime;
+        this.updateDetectedWordsUI();
+        this.updateSubmitButtonsUI();
         
       } catch (error) {
-        this.logOptimized(`Error during scan: ${error.message}`, 'error');
+        this.logActivity('Scan error: ' + error.message, 'error');
       } finally {
         this.state.isProcessing = false;
-        this.debouncedUpdate();
       }
     }
   
-    getPageTextOptimized() {
-      // Use textContent instead of innerText for better performance
-      return document.body.textContent.toLowerCase();
-    }
+    detectKeywords() {
+      const pageText = document.body.textContent.toLowerCase();
+      this.state.detectedWords.clear();
   
-    getCheckboxesOptimized() {
-      // Use more specific selector and convert NodeList to Array once
-      return Array.from(document.querySelectorAll('input[type="checkbox"]:not([data-processed])'));
-    }
-  
-    async processCheckboxesBatched(checkboxes, pageText) {
-      // Process checkboxes in batches to avoid blocking UI
-      for (let i = 0; i < checkboxes.length; i += this.config.batchSize) {
-        const batch = checkboxes.slice(i, i + this.config.batchSize);
-        
-        await new Promise(resolve => {
-          setTimeout(() => {
-            this.processBatch(batch, pageText);
-            resolve();
-          }, 0);
-        });
-      }
-    }
-  
-    processBatch(checkboxes, pageText) {
-      checkboxes.forEach(checkbox => {
-        if (this.state.cachedCheckboxes.has(checkbox)) return;
-        
-        checkbox.dataset.processed = 'true'; // Mark as processed
-        this.state.cachedCheckboxes.set(checkbox, true);
-        
-        const labelText = this.getCheckboxLabelOptimized(checkbox);
-        const combinedText = `${pageText} ${labelText.toLowerCase()}`;
-        
-        // Use Map for O(1) keyword lookup
-        for (const [keyword, tagKeys] of this.keywordMap) {
-          if (combinedText.includes(keyword)) {
-            this.attemptAutoClick(checkbox, keyword, tagKeys);
-            break; // Only match first keyword for efficiency
-          }
+      // Detect keywords and highlight corresponding tags
+      for (const [keyword, tagKeys] of this.keywordMap) {
+        if (pageText.includes(keyword)) {
+          this.state.detectedWords.add(keyword);
+          
+          // Highlight tags that match detected keywords
+          tagKeys.forEach(tagKey => {
+            const tagElement = document.querySelector(`[data-key="${tagKey}"]`);
+            if (tagElement && !this.state.selectedTags.has(tagKey)) {
+              tagElement.classList.add('detected');
+            }
+          });
         }
+      }
+  
+      document.getElementById('detected-count').textContent = this.state.detectedWords.size;
+    }
+  
+    findSubmitButtons() {
+      // Find submit buttons by various methods
+      const submitButtons = [];
+      
+      // Method 1: Input type submit
+      document.querySelectorAll('input[type="submit"]').forEach((btn, index) => {
+        submitButtons.push({
+          element: btn,
+          text: btn.value || 'Submit',
+          type: 'input[submit]',
+          id: `submit-input-${index}`
+        });
+      });
+  
+      // Method 2: Button elements with submit type
+      document.querySelectorAll('button[type="submit"]').forEach((btn, index) => {
+        submitButtons.push({
+          element: btn,
+          text: btn.textContent.trim() || 'Submit',
+          type: 'button[submit]',
+          id: `submit-button-${index}`
+        });
+      });
+  
+      // Method 3: Buttons with submit-related text
+      document.querySelectorAll('button').forEach((btn, index) => {
+        const text = btn.textContent.toLowerCase();
+        if (text.includes('submit') || text.includes('send') || text.includes('save') || 
+            text.includes('confirm') || text.includes('apply')) {
+          submitButtons.push({
+            element: btn,
+            text: btn.textContent.trim(),
+            type: 'button[text]',
+            id: `submit-text-${index}`
+          });
+        }
+      });
+  
+      this.state.foundSubmitButtons = submitButtons;
+    }
+  
+    updateDetectedWordsUI() {
+      const container = document.getElementById('detected-words-list');
+      container.innerHTML = '';
+  
+      if (this.state.detectedWords.size === 0) {
+        container.innerHTML = '<div style="color: #999; font-size: 9px;">No keywords detected</div>';
+        return;
+      }
+  
+      this.state.detectedWords.forEach(keyword => {
+        const keywordElement = document.createElement('div');
+        keywordElement.className = 'detected-keyword';
+        keywordElement.textContent = keyword;
+        keywordElement.addEventListener('click', () => {
+          this.logActivity(`Clicked keyword: ${keyword}`, 'info');
+          // Show which tags this keyword relates to
+          const relatedTags = this.keywordMap.get(keyword) || [];
+          if (relatedTags.length > 0) {
+            this.showNotification(`Keyword "${keyword}" relates to: ${relatedTags.join(', ')}`);
+          }
+        });
+        container.appendChild(keywordElement);
       });
     }
   
-    getCheckboxLabelOptimized(checkbox) {
-      // Use cached result if available
-      if (checkbox.dataset.labelText) {
-        return checkbox.dataset.labelText;
+    updateSubmitButtonsUI() {
+      const container = document.getElementById('submit-buttons-list');
+      container.innerHTML = '';
+  
+      if (this.state.foundSubmitButtons.length === 0) {
+        container.innerHTML = '<div style="color: #999; font-size: 9px;">No submit buttons found</div>';
+        return;
       }
   
-      let labelText = '';
-      
-      // Optimized label detection
-      if (checkbox.id) {
-        const label = document.querySelector(`label[for="${checkbox.id}"]`);
-        if (label) labelText = label.textContent;
-      }
-      
-      if (!labelText) {
-        const parentLabel = checkbox.closest('label');
-        if (parentLabel) labelText = parentLabel.textContent;
-      }
-      
-      if (!labelText) {
-        const container = checkbox.closest('tr, div, li, span');
-        if (container) labelText = container.textContent;
-      }
-      
-      // Cache the result
-      checkbox.dataset.labelText = labelText;
-      return labelText;
-    }
-  
-    attemptAutoClick(checkbox, keyword, tagKeys) {
-      if (checkbox.checked) return;
-      
-      try {
-        // Simulate natural click events
-        const clickEvent = new MouseEvent('click', {
-          bubbles: true,
-          cancelable: true,
-          view: window
+      this.state.foundSubmitButtons.slice(0, 5).forEach(btnInfo => { // Show max 5
+        const btnElement = document.createElement('div');
+        btnElement.className = 'submit-btn-item';
+        btnElement.textContent = `${btnInfo.text} (${btnInfo.type})`;
+        btnElement.addEventListener('click', () => {
+          try {
+            btnInfo.element.click();
+            this.logActivity(`Clicked submit button: ${btnInfo.text}`, 'success');
+          } catch (error) {
+            this.logActivity(`Failed to click button: ${error.message}`, 'error');
+          }
         });
-        
-        checkbox.dispatchEvent(clickEvent);
-        
-        // Ensure change event is fired
-        const changeEvent = new Event('change', { bubbles: true });
-        checkbox.dispatchEvent(changeEvent);
-        
-        this.performance.clickCount++;
-        this.logOptimized(`✅ Clicked: ${keyword}`, 'success');
-        
-        // Auto-select corresponding tags
-        tagKeys.forEach(tagKey => this.autoSelectTag(tagKey));
-        
-      } catch (error) {
-        this.logOptimized(`❌ Click failed: ${keyword}`, 'error');
-      }
+        container.appendChild(btnElement);
+      });
     }
   
-    autoSelectTag(tagKey) {
-      if (this.state.selectedTags.has(tagKey)) return;
-      
-      this.state.selectedTags.add(tagKey);
-      const tagElement = document.querySelector(`[data-key="${tagKey}"]`);
-      if (tagElement) {
-        tagElement.classList.add('auto-selected');
-      }
-    }
-  
-    attachOptimizedEventListeners() {
-      // Use passive listeners where possible for better performance
-      const passiveOptions = { passive: true };
-      
+    attachEventListeners() {
       // Auto-detection toggle
-      document.getElementById('auto-detection-toggle')?.addEventListener('change', (e) => {
+      document.getElementById('auto-detection-toggle').addEventListener('change', (e) => {
         this.state.autoDetectionEnabled = e.target.checked;
-        this.saveSettings();
-      }, passiveOptions);
+        this.logActivity(`Detection ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+        this.debouncedSave();
+      });
+  
+      // Panel controls
+      document.getElementById('minimize-panel').addEventListener('click', () => {
+        const panel = document.getElementById('behavior-tagger-panel');
+        panel.classList.toggle('panel-minimized');
+      });
+  
+      document.getElementById('close-panel').addEventListener('click', () => {
+        document.getElementById('behavior-tagger-panel').style.display = 'none';
+      });
   
       // Speed controls
-      document.getElementById('speed-up')?.addEventListener('click', () => {
+      document.getElementById('speed-up').addEventListener('click', () => {
         this.adjustSpeed(0.25);
-      }, passiveOptions);
+      });
   
-      document.getElementById('speed-down')?.addEventListener('click', () => {
+      document.getElementById('speed-down').addEventListener('click', () => {
         this.adjustSpeed(-0.25);
-      }, passiveOptions);
+      });
   
       // Action buttons
-      document.getElementById('submit-tags')?.addEventListener('click', () => {
+      document.getElementById('no-tag-btn').addEventListener('click', () => {
+        this.selectNoTag();
+      });
+  
+      document.getElementById('submit-tags-btn').addEventListener('click', () => {
         this.submitTags();
-      }, passiveOptions);
+      });
   
-      document.getElementById('clear-tags')?.addEventListener('click', () => {
+      document.getElementById('clear-all-btn').addEventListener('click', () => {
         this.clearAllTags();
-      }, passiveOptions);
+      });
   
-      // Panel toggle
-      document.getElementById('toggle-panel')?.addEventListener('click', (e) => {
-        const content = document.querySelector('.tagger-content');
-        const button = e.target;
-        if (content.style.display === 'none') {
-          content.style.display = 'block';
-          button.textContent = '−';
-        } else {
-          content.style.display = 'none';
-          button.textContent = '+';
-        }
-      }, passiveOptions);
-  
-      // Optimized keyboard shortcuts
+      // Keyboard shortcuts
       document.addEventListener('keydown', (e) => {
-        if (e.repeat) return; // Ignore repeated keydown events
-        
+        if (e.repeat) return;
         this.handleKeyboardShortcut(e);
       });
+    }
   
-      // Listen for messages from background script
-      chrome.runtime?.onMessage.addListener((message) => {
-        this.handleBackgroundMessage(message);
+    selectNoTag() {
+      // Clear all selected tags and mark as "No Tag"
+      this.clearAllTags();
+      this.logActivity('Selected: No Tag', 'info');
+      this.showNotification('No Tag selected');
+      
+      // You could add a special "no-tag" state here if needed
+      this.state.selectedTags.add('no-tag');
+    }
+  
+    toggleTag(tagKey) {
+      const tagElement = document.querySelector(`[data-key="${tagKey}"]`);
+      if (!tagElement) return;
+  
+      // Remove detected highlighting when manually selected
+      tagElement.classList.remove('detected');
+  
+      if (this.state.selectedTags.has(tagKey)) {
+        this.state.selectedTags.delete(tagKey);
+        tagElement.classList.remove('selected');
+      } else {
+        // Remove no-tag if present
+        this.state.selectedTags.delete('no-tag');
+        
+        this.state.selectedTags.add(tagKey);
+        tagElement.classList.add('selected');
+      }
+  
+      const tagName = this.roadFacingTags[tagKey] || this.driverFacingTags[tagKey];
+      const action = this.state.selectedTags.has(tagKey) ? 'Selected' : 'Deselected';
+      this.logActivity(`${action}: ${tagName}`, 'success');
+      this.debouncedSave();
+    }
+  
+    adjustSpeed(delta) {
+      this.state.currentSpeed = Math.max(0.25, Math.min(3.0, this.state.currentSpeed + delta));
+      
+      const videos = document.querySelectorAll('video');
+      videos.forEach(video => {
+        video.playbackRate = this.state.currentSpeed;
       });
+      
+      document.getElementById('speed-display').textContent = `${this.state.currentSpeed}x`;
+      this.logActivity(`Speed: ${this.state.currentSpeed}x`, 'info');
+      this.debouncedSave();
+    }
+  
+    clearAllTags() {
+      this.state.selectedTags.clear();
+      document.querySelectorAll('.tag-item.selected').forEach(el => {
+        el.classList.remove('selected');
+      });
+      this.logActivity('All tags cleared', 'info');
+      this.debouncedSave();
+    }
+  
+    submitTags() {
+      if (this.state.selectedTags.size === 0) {
+        this.showNotification('No tags selected to submit');
+        return;
+      }
+  
+      const selectedTagNames = Array.from(this.state.selectedTags).map(key => {
+        if (key === 'no-tag') return 'No Tag';
+        return this.roadFacingTags[key] || this.driverFacingTags[key];
+      }).filter(Boolean);
+  
+      const submissionData = {
+        timestamp: Date.now(),
+        tags: selectedTagNames,
+        speed: this.state.currentSpeed,
+        url: window.location.href,
+        detectedKeywords: Array.from(this.state.detectedWords),
+        submitButtonsFound: this.state.foundSubmitButtons.length
+      };
+  
+      // Save submission
+      try {
+        const existingData = JSON.parse(localStorage.getItem('submittedTags') || '[]');
+        existingData.push(submissionData);
+        localStorage.setItem('submittedTags', JSON.stringify(existingData));
+      } catch (error) {
+        console.error('Storage failed:', error);
+      }
+  
+      this.logActivity(`📤 Submitted ${selectedTagNames.length} tags`, 'success');
+      this.showNotification(`Submitted: ${selectedTagNames.join(', ')}`);
+  
+      setTimeout(() => this.clearAllTags(), 1000);
     }
   
     handleKeyboardShortcut(e) {
-      // Use object lookup for better performance
       const shortcuts = {
         'ArrowUp': () => e.ctrlKey && this.adjustSpeed(0.25),
         'ArrowDown': () => e.ctrlKey && this.adjustSpeed(-0.25),
@@ -657,7 +1042,7 @@ class OptimizedDriveBehaviorTagger {
         return;
       }
   
-      // Function keys for tags
+      // Function keys for road tags
       if (e.key.startsWith('F') && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         const keyNum = e.key.substring(1);
@@ -667,7 +1052,7 @@ class OptimizedDriveBehaviorTagger {
         }
       }
   
-      // Driver tags (D + number)
+      // D + number for driver tags
       if (e.key.toLowerCase() === 'd' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         this.showNotification('Press 1-5 for driver tag');
@@ -691,119 +1076,18 @@ class OptimizedDriveBehaviorTagger {
       }, 2000);
     }
   
-    toggleTag(tagKey) {
-      const tagElement = document.querySelector(`[data-key="${tagKey}"]`);
-      if (!tagElement) return;
-      
-      if (this.state.selectedTags.has(tagKey)) {
-        this.state.selectedTags.delete(tagKey);
-        tagElement.classList.remove('selected', 'auto-selected');
-      } else {
-        this.state.selectedTags.add(tagKey);
-        tagElement.classList.add('selected');
-        tagElement.classList.remove('auto-selected');
-      }
-  
-      this.saveSettings();
-      
-      const tagName = this.roadFacingTags[tagKey] || this.driverFacingTags[tagKey];
-      const action = this.state.selectedTags.has(tagKey) ? 'Selected' : 'Deselected';
-      this.showNotification(`${action}: ${tagName}`);
-    }
-  
-    adjustSpeed(delta) {
-      this.state.currentSpeed = Math.max(0.25, Math.min(3.0, this.state.currentSpeed + delta));
-      
-      // Batch video speed updates
-      const videos = document.querySelectorAll('video');
-      videos.forEach(video => {
-        video.playbackRate = this.state.currentSpeed;
-      });
-      
-      this.updateUI();
-      this.saveSettings();
-      this.showNotification(`Speed: ${this.state.currentSpeed}x`);
-    }
-  
-    clearAllTags() {
-      this.state.selectedTags.clear();
-      document.querySelectorAll('.tag-item.selected, .tag-item.auto-selected').forEach(el => {
-        el.classList.remove('selected', 'auto-selected');
-      });
-      this.saveSettings();
-      this.showNotification('All tags cleared');
-    }
-  
     toggleFullscreen() {
       if (!document.fullscreenElement) {
         document.documentElement.requestFullscreen().catch(err => {
-          this.logOptimized('Fullscreen failed', 'error');
+          this.logActivity('Fullscreen failed', 'error');
         });
       } else {
         document.exitFullscreen();
       }
     }
   
-    async submitTags() {
-      if (this.state.selectedTags.size === 0) {
-        this.showNotification('No tags to submit');
-        return;
-      }
-  
-      const selectedTagNames = Array.from(this.state.selectedTags).map(key => {
-        return this.roadFacingTags[key] || this.driverFacingTags[key];
-      });
-  
-      const submissionData = {
-        timestamp: Date.now(),
-        tags: selectedTagNames,
-        speed: this.state.currentSpeed,
-        url: window.location.href,
-        performance: this.performance,
-        tagKeys: Array.from(this.state.selectedTags)
-      };
-  
-      // Async storage to avoid blocking
-      setTimeout(() => {
-        try {
-          const existingData = JSON.parse(localStorage.getItem('submittedTags') || '[]');
-          existingData.push(submissionData);
-          localStorage.setItem('submittedTags', JSON.stringify(existingData));
-        } catch (error) {
-          console.error('Storage failed:', error);
-        }
-      }, 0);
-  
-      this.logOptimized(`📤 Submitted ${selectedTagNames.length} tags`, 'success');
-      this.showNotification(`Submitted ${selectedTagNames.length} tags!`);
-  
-      // Auto-clear after delay
-      setTimeout(() => this.clearAllTags(), 1000);
-    }
-  
-    updateUI() {
-      // Batch UI updates
-      const updates = [
-        () => {
-          const speedDisplay = document.getElementById('speed-display');
-          if (speedDisplay) speedDisplay.textContent = `${this.state.currentSpeed}x`;
-        },
-        () => {
-          const statsDisplay = document.getElementById('performance-stats');
-          if (statsDisplay) {
-            statsDisplay.textContent = `Scans: ${this.performance.scanCount} | Clicks: ${this.performance.clickCount}`;
-          }
-        }
-      ];
-  
-      // Use requestAnimationFrame for smooth updates
-      requestAnimationFrame(() => {
-        updates.forEach(update => update());
-      });
-    }
-  
-    logOptimized(message, type = 'info') {
-      const logContainer = document.getElementById('detection-log');
+    logActivity(message, type = 'info') {
+      const logContainer = document.getElementById('activity-log');
       if (!logContainer) return;
   
       const logEntry = document.createElement('div');
@@ -815,22 +1099,16 @@ class OptimizedDriveBehaviorTagger {
         second: '2-digit' 
       })}: ${message}`;
       
-      // Use DocumentFragment for efficient DOM manipulation
-      const fragment = document.createDocumentFragment();
-      fragment.appendChild(logEntry);
-      logContainer.appendChild(fragment);
-      
-      // Auto-scroll with smooth behavior
+      logContainer.appendChild(logEntry);
       logContainer.scrollTop = logContainer.scrollHeight;
       
-      // Limit log entries for memory efficiency
+      // Limit log entries
       while (logContainer.children.length > this.config.maxLogEntries) {
         logContainer.removeChild(logContainer.firstChild);
       }
     }
   
     showNotification(message) {
-      // Remove existing notification
       const existing = document.querySelector('.notification');
       if (existing) existing.remove();
   
@@ -839,8 +1117,6 @@ class OptimizedDriveBehaviorTagger {
       notification.textContent = message;
   
       document.body.appendChild(notification);
-      
-      // Auto-remove with proper cleanup
       setTimeout(() => {
         if (notification.parentNode) {
           notification.remove();
@@ -848,16 +1124,14 @@ class OptimizedDriveBehaviorTagger {
       }, 3000);
     }
   
-    handleBackgroundMessage(message) {
-      const actions = {
-        'toggle-fullscreen': () => this.toggleFullscreen(),
-        'increase-speed': () => this.adjustSpeed(0.25),
-        'decrease-speed': () => this.adjustSpeed(-0.25),
-        'submit-tags': () => this.submitTags()
-      };
-  
-      const action = actions[message.action];
-      if (action) action();
+    restorePosition() {
+      const panel = document.getElementById('behavior-tagger-panel');
+      panel.style.top = this.state.panelPosition.top + 'px';
+      panel.style.left = this.state.panelPosition.left + 'px';
+      if (this.state.panelSize.height !== 'auto') {
+        panel.style.width = this.state.panelSize.width + 'px';
+        panel.style.height = this.state.panelSize.height + 'px';
+      }
     }
   
     async saveSettings() {
@@ -865,6 +1139,8 @@ class OptimizedDriveBehaviorTagger {
         selectedTags: Array.from(this.state.selectedTags),
         currentSpeed: this.state.currentSpeed,
         autoDetectionEnabled: this.state.autoDetectionEnabled,
+        panelPosition: this.state.panelPosition,
+        panelSize: this.state.panelSize,
         timestamp: Date.now()
       };
   
@@ -885,24 +1161,27 @@ class OptimizedDriveBehaviorTagger {
         this.state.currentSpeed = settings.currentSpeed || 1.0;
         this.state.autoDetectionEnabled = settings.autoDetectionEnabled !== false;
         
+        if (settings.panelPosition) {
+          this.state.panelPosition = settings.panelPosition;
+        }
+        if (settings.panelSize) {
+          this.state.panelSize = settings.panelSize;
+        }
+        
       } catch (error) {
         console.error('Settings load failed:', error);
-        // Reset to defaults on error
-        this.state.selectedTags = new Set();
-        this.state.currentSpeed = 1.0;
-        this.state.autoDetectionEnabled = true;
       }
     }
   }
   
-  // Initialize with proper error handling and cleanup
+  // Initialize
   (() => {
     let taggerInstance = null;
     
     const initialize = () => {
       try {
-        if (taggerInstance) return; // Prevent multiple instances
-        taggerInstance = new OptimizedDriveBehaviorTagger();
+        if (taggerInstance) return;
+        taggerInstance = new DraggableBehaviorTagger();
       } catch (error) {
         console.error('Tagger initialization failed:', error);
       }
@@ -914,11 +1193,9 @@ class OptimizedDriveBehaviorTagger {
       initialize();
     }
   
-    // Cleanup on page unload
     window.addEventListener('beforeunload', () => {
       if (taggerInstance) {
         taggerInstance.saveSettings();
-        taggerInstance = null;
       }
     }, { once: true });
   })();
